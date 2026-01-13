@@ -1,0 +1,20 @@
+# PyTorch y dependencias de deep learning
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Procesamiento de imágenes
+opencv-python>=4.8.0
+pillow>=10.0.0
+
+# Cálculos numéricos
+numpy>=1.24.0
+
+# Comunicación serial con Arduino
+pyserial>=3.5
+
+# Visualización
+matplotlib>=3.7.0
+
+# Barra de progreso
+tqdm>=4.65.0
