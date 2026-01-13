@@ -1,0 +1,38 @@
+# calibrar_umbral.py
+import torch, os, numpy as np
+from torchvision import transforms, datasets
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from entrenar_autoencoder import ConvAutoencoder, DEVICE
+
+MODEL_PATH = "modelos/modelo_autoencoder.pth"
+IMG_SIZE = 128
+BATCH_SIZE = 8
+VAL_DIR = "dataset/validacion"  # carpeta con imágenes buenas de validación
+
+transform = transforms.Compose([transforms.Resize((IMG_SIZE, IMG_SIZE)), transforms.ToTensor()])
+val_dataset = datasets.ImageFolder(VAL_DIR, transform=transform)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+model = ConvAutoencoder().to(DEVICE)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+model.eval()
+
+errors = []
+with torch.no_grad():
+    for imgs, _ in tqdm(val_loader):
+        imgs = imgs.to(DEVICE)
+        recon = model(imgs)
+        mse = ((imgs - recon) ** 2).mean(dim=[1,2,3]).cpu().numpy()
+        errors.extend(mse.tolist())
+
+errors = np.array(errors)
+mean = errors.mean()
+std = errors.std()
+p95 = np.percentile(errors, 95)
+print("mean:", mean, "std:", std, "p95:", p95)
+print("Sugerencias de umbral:")
+print("mean + 3*std =", mean + 3*std)
+print("percentil 95 =", p95)
+# Guarda umbral en archivo
+np.save("modelos/errors_stats.npy", np.array([mean, std, p95]))

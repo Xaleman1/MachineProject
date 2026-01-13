@@ -1,0 +1,79 @@
+# entrenar_autoencoder.py
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import transforms, datasets
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+# Config
+DATA_DIR = "dataset"  # contiene carpeta "buenos"
+BATCH_SIZE = 16
+IMG_SIZE = 128
+EPOCHS = 25
+MODEL_DIR = "modelos"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Modelo: Conv Autoencoder sencillo
+class ConvAutoencoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 16, 3, stride=2, padding=1), # 128 -> 64
+            nn.ReLU(True),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1), # 64 -> 32
+            nn.ReLU(True),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1), # 32 -> 16
+            nn.ReLU(True)
+        )
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(16, 3, 3, stride=2, padding=1, output_padding=1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        z = self.encoder(x)
+        out = self.decoder(z)
+        return out
+
+# Transforms & dataset
+transform = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.ToTensor()
+])
+
+dataset = datasets.ImageFolder(DATA_DIR, transform=transform)  # ImageFolder expects subfolders; puedes meter "buenos" como subfolder
+loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True)
+
+# Model, loss, optimizer
+model = ConvAutoencoder().to(DEVICE)
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Entrenamiento
+for epoch in range(EPOCHS):
+    model.train()
+    running = 0.0
+    loop = tqdm(loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+    for imgs, _ in loop:
+        imgs = imgs.to(DEVICE)
+        optimizer.zero_grad()
+        recon = model(imgs)
+        loss = criterion(recon, imgs)
+        loss.backward()
+        optimizer.step()
+        running += loss.item() * imgs.size(0)
+        loop.set_postfix(loss=loss.item())
+    epoch_loss = running / len(dataset)
+    print(f"Epoch {epoch+1} loss: {epoch_loss:.6f}")
+
+# Guardar
+torch.save(model.state_dict(), os.path.join(MODEL_DIR, "modelo_autoencoder.pth"))
+print("Modelo guardado en", os.path.join(MODEL_DIR, "modelo_autoencoder.pth"))

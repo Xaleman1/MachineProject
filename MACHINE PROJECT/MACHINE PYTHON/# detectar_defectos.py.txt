@@ -1,0 +1,114 @@
+# detectar_defectos.py
+import torch
+import torch.nn as nn
+import cv2
+import numpy as np
+from torchvision import transforms
+import serial
+import time
+import os
+
+from entrenar_autoencoder import ConvAutoencoder  # si usaste el mismo archivo
+
+# Config
+MODEL_PATH = "modelos/modelo_autoencoder.pth"
+STATS_PATH = "modelos/errors_stats.npy"  # opcional, si calibraste
+IMG_SIZE = 128
+CAM_INDEX = 0   # cambiar si tu cámara es 1
+COM_PORT = "COM7"  # puerto Arduino
+BAUD = 115200
+SAMPLE_FRAMES = 3  # cuántos frames tomar después de recibir 'S' (o tiempo en segundos)
+USE_TIME_WINDOW = True
+WINDOW_SECONDS = 1.5
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+transform = transforms.Compose([transforms.ToPILImage(), transforms.Resize((IMG_SIZE, IMG_SIZE)), transforms.ToTensor()])
+
+# Cargar modelo
+model = ConvAutoencoder().to(DEVICE)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+model.eval()
+
+# Umbral: cargar stats si existe
+if os.path.exists(STATS_PATH):
+    mean, std, p95 = np.load(STATS_PATH)
+    threshold = mean + 3*std
+    print("Umbral cargado (mean+3std):", threshold, " p95:", p95)
+else:
+    threshold = 0.02  # valor por defecto (ajustar)
+    print("Umbral por defecto:", threshold)
+
+# Abrir puerto serial
+try:
+    ser = serial.Serial(COM_PORT, BAUD, timeout=0.1)
+    time.sleep(2)
+    print("Serial abierto en", COM_PORT)
+except Exception as e:
+    print("No se pudo abrir puerto serial:", e)
+    ser = None
+
+cap = cv2.VideoCapture(CAM_INDEX)
+if not cap.isOpened():
+    raise RuntimeError("No se pudo abrir la cámara index", CAM_INDEX)
+
+sampling = False
+start_time = 0.0
+errors_window = []
+
+print("Esperando 'S' desde Arduino... (presiona ESC para salir)")
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Leer serial: si recibes 'S', activar ventana de muestreo
+    if ser and ser.in_waiting > 0:
+        line = ser.readline().decode().strip()
+        if line.upper() == "S":
+            print("S recibido: iniciando muestreo")
+            sampling = True
+            start_time = time.time()
+            errors_window = []
+
+    # Si estamos en ventana de muestreo, procesar frames
+    if sampling:
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img_t = transform(img).unsqueeze(0).to(DEVICE)
+        with torch.no_grad():
+            recon = model(img_t)
+            mse = ((img_t - recon) ** 2).mean().item()
+        errors_window.append(mse)
+        # condición de fin: tiempo o número de frames
+        if USE_TIME_WINDOW:
+            if time.time() - start_time >= WINDOW_SECONDS:
+                sampling = False
+        else:
+            if len(errors_window) >= SAMPLE_FRAMES:
+                sampling = False
+
+        # show debug
+        cv2.putText(frame, f"err:{mse:.5f}", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+
+        if not sampling:
+            # decisión: usar media de la ventana
+            avg_err = float(np.mean(errors_window))
+            print("Avg error en ventana:", avg_err)
+            if avg_err > threshold:
+                decision = "BAD"
+            else:
+                decision = "OK"
+            print("Decision:", decision)
+            if ser:
+                ser.write((decision + "\n").encode())
+            # opcional: mostrar en pantalla
+            cv2.putText(frame, decision, (10,60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255) if decision=="BAD" else (0,255,0), 3)
+
+    cv2.imshow("Inspeccion", frame)
+    key = cv2.waitKey(1) & 0xFF
+    if key == 27:
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+if ser: ser.close()

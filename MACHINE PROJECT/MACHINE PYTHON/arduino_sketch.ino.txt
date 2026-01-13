@@ -1,0 +1,108 @@
+// arduino_sketch.ino
+#include <Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+Servo servoRechazo;
+const int servoRechazoPin = 8;
+
+const int sensorEntradaPin = 6;   // IR al inicio
+const int sensorExpulsionPin = 7; // IR en punto de expulsión
+const int fajaPin = 12;           // controla relay/driver de la faja
+
+unsigned long lastDebounce = 0;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(sensorEntradaPin, INPUT);
+  pinMode(sensorExpulsionPin, INPUT);
+  pinMode(fajaPin, OUTPUT);
+  digitalWrite(fajaPin, HIGH); // faja encendida por defecto
+
+  servoRechazo.attach(servoRechazoPin);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Clasificador ON");
+  delay(1200);
+  lcd.clear();
+}
+
+void loop() {
+  // Verificar sensor entrada (active LOW typical)
+  if (digitalRead(sensorEntradaPin) == LOW) {
+    // Debounce
+    if (millis() - lastDebounce < 300) return;
+    lastDebounce = millis();
+
+    // Enviar 'S' a Python para pedir clasificacion
+    Serial.println("S");
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Esperando PC...");
+    // Parar faja si quieres que se detenga durante clasificacion (opcional)
+    // digitalWrite(fajaPin, LOW);
+
+    // Esperar respuesta (timeout)
+    String respuesta = "";
+    unsigned long start = millis();
+    const unsigned long TIMEOUT = 5000; // ms
+    while (millis() - start < TIMEOUT) {
+      if (Serial.available() > 0) {
+        respuesta = Serial.readStringUntil('\n');
+        respuesta.trim();
+        break;
+      }
+    }
+
+    if (respuesta.length() == 0) {
+      // Timeout -> asumir OK para seguridad
+      lcd.clear(); lcd.setCursor(0,0); lcd.print("Timeout -> OK");
+      digitalWrite(fajaPin, HIGH);
+      delay(300);
+      continue;
+    }
+
+    lcd.clear();
+    lcd.setCursor(0,0);
+    if (respuesta.equalsIgnoreCase("BAD")) {
+      lcd.print("Producto MALO");
+      digitalWrite(fajaPin, LOW); // detener faja
+      // Esperar sensorExpulsion o tiempo fijo
+      unsigned long start_wait = millis();
+      const unsigned long MAX_WAIT = 4000;
+      bool arrived = false;
+      while (millis() - start_wait < MAX_WAIT) {
+        if (digitalRead(sensorExpulsionPin) == LOW) { arrived = true; break; }
+        delay(10);
+      }
+      // Si no hay sensorExpulsion llega por tiempo, proceder
+      expulsarProducto();
+      digitalWrite(fajaPin, HIGH); // reanudar faja
+    } else {
+      lcd.print("Producto OK");
+      digitalWrite(fajaPin, HIGH);
+    }
+    delay(300);
+    lcd.clear();
+  }
+}
+
+void expulsarProducto() {
+  // Mueve servo para empujar (ajusta ángulos/times a tu servo)
+  servoRechazo.write(90); // posición neutra
+  delay(200);
+  servoRechazo.write(140); // empuja (ajusta)
+  delay(700);
+  servoRechazo.write(90); // vuelve
+  delay(300);
+  // Mensaje
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Expulsion OK");
+  delay(500);
+}
